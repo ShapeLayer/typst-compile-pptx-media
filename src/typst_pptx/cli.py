@@ -10,7 +10,7 @@ def confirm_video_conversion(source, inspection):
         print(f"  - {reason}", file=sys.stderr)
     if not sys.stdin.isatty():
         raise RuntimeError('대화형 입력이 필요합니다. 변환하려면 --video-conversion convert, 중단하려면 --video-conversion error를 지정하세요.')
-    print("H.264/AAC MP4로 변환하여 포함할까요? 원본은 유지됩니다. [y/N] ",
+    print("H.264/AAC MP4로 변환하여 포함할까요? 이 과정에서 원본 파일은 수정되지 않습니다. [y/N] ",
           file=sys.stderr, end='', flush=True)
     try:
         return input().strip().lower() in ('y', 'yes', '예')
