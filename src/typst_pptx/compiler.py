@@ -8,10 +8,13 @@ import subprocess
 import tempfile
 import warnings
 from urllib.parse import urlsplit
+from urllib.request import urlopen
+from urllib.error import URLError
 
 import pymupdf as fitz
 from PIL import Image
 from .ooxml import Deck
+from .vector import drawing_svg
 
 
 def _run(command):
@@ -29,7 +32,7 @@ def _box(rect):
     return r.x0, r.y0, r.width, r.height
 
 
-def _png(page, ppi=144, clip=None):
+def _png(page, ppi=192, clip=None):
     return page.get_pixmap(matrix=fitz.Matrix(ppi / 72, ppi / 72), clip=clip, alpha=False).tobytes('png')
 
 
@@ -62,11 +65,21 @@ def _media(records, document, media_root):
             raise ValueError('Media must fit completely on one page')
         source = record['source']
         parsed = urlsplit(source)
-        data = None
         extension = Path(parsed.path).suffix.lower().lstrip('.') or 'mp4'
+        if extension not in ('mp4', 'm4v', 'mov', 'avi', 'wmv', 'webm', 'mpeg', 'mpg'):
+            raise ValueError(f'Unsupported video extension: {extension}')
         if parsed.scheme in ('http', 'https'):
             if not parsed.netloc:
                 raise ValueError(f'Invalid video URL: {source}')
+            try:
+                with urlopen(source, timeout=60) as response:
+                    if urlsplit(response.geturl()).scheme not in ('http', 'https'):
+                        raise ValueError('Video redirects must use http or https')
+                    if response.headers.get_content_type() in ('text/html', 'application/xhtml+xml'):
+                        raise ValueError('Video URL returned a webpage; provide a direct video file URL')
+                    data = response.read()
+            except (URLError, OSError) as exc:
+                raise RuntimeError(f'Could not download video: {source}: {exc}') from exc
         else:
             # A drive letter on Windows is not a URL scheme.
             if parsed.scheme and not (len(parsed.scheme) == 1 and source[1:3] in (':/', ':\\')):
@@ -75,15 +88,15 @@ def _media(records, document, media_root):
             if not path.is_absolute():
                 path = media_root / path
             data = path.read_bytes()
-        if extension not in ('mp4', 'm4v', 'mov', 'avi', 'wmv', 'webm', 'mpeg', 'mpg'):
-            raise ValueError(f'Unsupported video extension: {extension}')
+        if not data:
+            raise ValueError(f'Video file is empty: {source}')
         entry = dict(source=source, data=data, extension=extension, box=box,
                      thumbnail=_png(page, clip=rect), playback=_playback(record.get('playback', {})))
         result.setdefault(page_number - 1, []).append(entry)
     return result
 
 
-def _editable(slide, page):
+def _editable(slide, page, vector_format="svg", ppi=192):
     """Preserve PDF paint order and expose text, images and vector paths."""
     events = []
     for span in page.get_texttrace():
@@ -116,7 +129,11 @@ def _editable(slide, page):
         warnings.warn(f'Page {page.number + 1}: shading exported as separate image objects', stacklevel=2)
     for _, kind, item in sorted(events, key=lambda e: e[0]):
         if kind == 'path':
-            slide.drawing(item)
+            if vector_format == 'svg':
+                svg, fallback, box = drawing_svg(item, ppi)
+                slide.picture(fallback, 'png', box, svg=svg)
+            else:
+                slide.drawing(item)
         elif kind == 'image':
             # Extracted images remain independently movable/replacable.
             data = item['image']
@@ -150,9 +167,10 @@ def _editable(slide, page):
                        size, item['color'], item['flags'], rotation, item['opacity'])
 
 
-def compile_pptx(input, output, *, mode='background', background_format='png', ppi=144,
+def compile_pptx(input, output, *, mode='background', background_format='svg', ppi=192,
+                 vector_format='svg',
                  root=None, media_root=None, typst='typst', inputs=(), font_path=()):
-    """Export all Typst pages. Local videos embed; HTTP(S) videos remain linked.
+    """Export all Typst pages, embedding local and downloaded HTTP(S) videos.
 
     ``root``, ``inputs`` and ``font_path`` are passed consistently to both
     rendering and metadata evaluation. Output is atomically replaced on success.
@@ -161,6 +179,8 @@ def compile_pptx(input, output, *, mode='background', background_format='png', p
         raise ValueError('mode must be background or editable')
     if background_format not in ('png', 'jpeg', 'svg'):
         raise ValueError('background_format must be png, jpeg, or svg')
+    if vector_format not in ('svg', 'native'):
+        raise ValueError('vector_format must be svg or native')
     if not math.isfinite(ppi) or ppi <= 0:
         raise ValueError('ppi must be positive and finite')
     source, destination = Path(input).resolve(), Path(output).resolve()
@@ -190,7 +210,7 @@ def compile_pptx(input, output, *, mode='background', background_format='png', p
             for i, page in enumerate(document):
                 slide = deck.slide()
                 if mode == 'editable':
-                    _editable(slide, page)
+                    _editable(slide, page, vector_format, ppi)
                 else:
                     svg = None
                     if background_format in ('png', 'svg'):

@@ -12,6 +12,8 @@ Typst 0.15+ media thumbnail and PowerPoint metadata package.
 
 `source` is a URL or file path string. Local video paths resolve relative to
 `typst-pptx --media-root` (default: the input document directory).
+Local and HTTP(S) videos are copied into the PPTX; URL videos are downloaded
+at compile time and do not require a network connection during playback.
 Pass thumbnails as `path(...)` so they resolve in the calling document.
 The default thumbnail is a built-in play image. `compatible: "none"` renders
 only the image and omits PowerPoint video metadata. Ordinary Typst always

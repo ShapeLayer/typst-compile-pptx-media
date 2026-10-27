@@ -6,6 +6,9 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+from email.message import Message
+from urllib.error import URLError
 from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
@@ -68,6 +71,10 @@ class CompilerTests(unittest.TestCase):
                         root = self.xml(archive, name)
                         self.assertIsNotNone(root.find('p:cSld/p:bg/p:bgPr/a:blipFill', NS))
                         self.assertEqual(len(root.findall('.//p:sp', NS)), 0)
+                    if fmt == 'png':
+                        images = [n for n in archive.namelist() if n.endswith('.png')]
+                        image = Image.open(io.BytesIO(archive.read(images[0])))
+                        self.assertEqual(image.size, (1067, 800))  # 400 x 300pt at 192 PPI
                     if fmt == 'svg':
                         self.assertEqual(sum(n.endswith('.svg') for n in archive.namelist()), 2)
                     if fmt == 'jpeg':
@@ -76,7 +83,7 @@ class CompilerTests(unittest.TestCase):
 
     def test_editable_text_paths_images_and_order(self):
         self.write('Editable text 한글\n#rect(width: 80pt, height: 30pt, fill: blue)\n#image("thumb.png", width: 80pt)')
-        self.compile(mode='editable')
+        self.compile(mode='editable', vector_format='native')
         with ZipFile(self.output) as archive:
             self.assert_package(archive)
             root = self.xml(archive, 'ppt/slides/slide1.xml')
@@ -87,6 +94,36 @@ class CompilerTests(unittest.TestCase):
             self.assertIsNone(root.find('.//p:bg', NS))
             ids = [e.get('id') for e in root.findall('.//p:cNvPr', NS)]
             self.assertEqual(len(ids), len(set(ids)))
+
+    def test_default_background_uses_real_svg(self):
+        self.write('#circle(radius: 25pt, fill: blue)')
+        self.compile()
+        with ZipFile(self.output) as archive:
+            self.assert_package(archive)
+            svgs = [n for n in archive.namelist() if n.endswith('.svg')]
+            self.assertEqual(len(svgs), 1)
+            svg = self.xml(archive, svgs[0])
+            self.assertTrue(any(e.tag.endswith('}path') for e in svg.iter()))
+            self.assertFalse(any(e.tag.endswith('}image') for e in svg.iter()))
+
+    def test_default_editable_vectors_are_svg_pictures(self):
+        self.write('Editable text\n#rect(width: 80pt, height: 30pt, radius: 5pt, fill: blue, stroke: (paint: red, thickness: 2pt, dash: "dashed"))')
+        self.compile(mode='editable')
+        with ZipFile(self.output) as archive:
+            self.assert_package(archive)
+            root = self.xml(archive, 'ppt/slides/slide1.xml')
+            self.assertIn('Editable text', ''.join(root.itertext()))
+            self.assertIsNone(root.find('.//a:custGeom', NS))
+            svg_blips = root.findall('.//{http://schemas.microsoft.com/office/drawing/2016/SVG/main}svgBlip')
+            self.assertTrue(svg_blips)
+            svgs = [n for n in archive.namelist() if n.endswith('.svg')]
+            self.assertTrue(svgs)
+            for name in svgs:
+                svg = self.xml(archive, name)
+                self.assertTrue(any(e.tag.endswith('}path') for e in svg.iter()))
+                self.assertFalse(any(e.tag.endswith('}image') for e in svg.iter()))
+            pngs = [n for n in archive.namelist() if n.endswith('.png')]
+            self.assertTrue(any(Image.open(io.BytesIO(archive.read(n))).getchannel('A').getextrema()[1] > 0 for n in pngs))
 
     def test_local_video_embedded_with_thumbnail_and_playback(self):
         self.write('#media("video.mp4", thumbnail: path("thumb.png"), width: 160pt, height: 90pt, playback: (autoplay: true, loop: true, muted: true))')
@@ -104,18 +141,58 @@ class CompilerTests(unittest.TestCase):
                     self.assertEqual(len(video), 1)
                     self.assertEqual(archive.read(video[0]), (self.work / 'video.mp4').read_bytes())
 
-    def test_remote_video_link_and_click_volume(self):
-        self.write('#media("https://example.org/clip.mp4?a=1&b=2", width: 160pt, height: 90pt, playback: (volume: 0.25))')
-        self.compile()
-        with ZipFile(self.output) as archive:
-            self.assert_package(archive)
-            rels = self.xml(archive, 'ppt/slides/_rels/slide1.xml.rels')
-            remote = [r for r in rels if r.get('TargetMode') == 'External']
-            self.assertEqual(len(remote), 2)
-            self.assertTrue(all(r.get('Target') == 'https://example.org/clip.mp4?a=1&b=2' for r in remote))
-            root = self.xml(archive, 'ppt/slides/slide1.xml')
-            self.assertEqual(root.find('.//p:cMediaNode', NS).get('vol'), '25000')
-            self.assertEqual(root.find('.//p:stCondLst/p:cond', NS).get('evt'), 'onClick')
+    def test_remote_video_embedded_and_click_volume(self):
+        url = 'https://example.org/clip.mp4?a=1&b=2'
+        self.write('#media("' + url + '", width: 160pt, height: 90pt, playback: (volume: 0.25))')
+        data = (self.work / 'video.mp4').read_bytes()
+        for mode in ('background', 'editable'):
+            with self.subTest(mode=mode):
+                response = io.BytesIO(data)
+                response.headers = Message()
+                response.headers['Content-Type'] = 'video/mp4'
+                response.geturl = lambda: url
+                with patch('typst_pptx.compiler.urlopen', return_value=response) as download:
+                    self.compile(mode=mode)
+                    download.assert_called_once_with(url, timeout=60)
+                with ZipFile(self.output) as archive:
+                    self.assert_package(archive)
+                    rels = self.xml(archive, 'ppt/slides/_rels/slide1.xml.rels')
+                    self.assertFalse(any(r.get('TargetMode') == 'External' for r in rels))
+                    media = [r for r in rels if r.get('Type').endswith(('/media', '/video'))]
+                    self.assertEqual(len(media), 2)
+                    self.assertEqual(len({r.get('Target') for r in media}), 1)
+                    target = posixpath.normpath('ppt/slides/' + media[0].get('Target'))
+                    self.assertEqual(archive.read(target), data)
+                    root = self.xml(archive, 'ppt/slides/slide1.xml')
+                    self.assertIsNotNone(root.find('.//p14:media', NS).get('{'+NS['r']+'}embed'))
+                    self.assertEqual(root.find('.//p:cMediaNode', NS).get('vol'), '25000')
+                    self.assertEqual(root.find('.//p:stCondLst/p:cond', NS).get('evt'), 'onClick')
+
+    def test_download_failure_preserves_previous_output(self):
+        self.write('#media("https://example.org/clip.mp4", width: 160pt, height: 90pt)')
+        self.output.write_bytes(b'previous')
+        with patch('typst_pptx.compiler.urlopen', side_effect=URLError('download failed')):
+            with self.assertRaisesRegex(RuntimeError, 'Could not download video'):
+                self.compile()
+        self.assertEqual(self.output.read_bytes(), b'previous')
+
+    def test_webpage_and_empty_download_rejected(self):
+        url = 'https://example.org/clip.mp4'
+        self.write('#media("' + url + '", width: 160pt, height: 90pt)')
+        for content_type, data in [('text/html', b'<html>Not a video</html>'), ('video/mp4', b'')]:
+            response = io.BytesIO(data)
+            response.headers = Message()
+            response.headers['Content-Type'] = content_type
+            response.geturl = lambda: url
+            with patch('typst_pptx.compiler.urlopen', return_value=response):
+                with self.assertRaises(ValueError):
+                    self.compile()
+
+    def test_none_does_not_download_video(self):
+        self.write('#media("https://example.org/missing.mp4", compatible: "none")')
+        with patch('typst_pptx.compiler.urlopen') as download:
+            self.compile()
+            download.assert_not_called()
 
     def test_none_is_only_an_image_and_never_reads_missing_video(self):
         self.write('#media("missing.mp4", compatible: "none", thumbnail: path("thumb.png"))')
@@ -186,7 +263,7 @@ class CompilerTests(unittest.TestCase):
 
     def test_invalid_parameters(self):
         self.write('Hello')
-        for kwargs in ({'ppi': 0}, {'ppi': float('nan')}, {'mode': 'bad'}, {'background_format': 'pdf'}):
+        for kwargs in ({'ppi': 0}, {'ppi': float('nan')}, {'mode': 'bad'}, {'background_format': 'pdf'}, {'vector_format': 'bad'}):
             with self.assertRaises(ValueError):
                 self.compile(**kwargs)
         for body in ('#media("v.mp4", compatible: "pdf")', '#media("v.mp4", playback: (muted: 1))', '#media("v.mp4", playback: (volume: 2))'):

@@ -246,20 +246,21 @@ class Slide:
         return sp
 
     def video(self, data, extension, source, thumbnail, box, playback):
+        if not data:
+            raise ValueError('Video bytes are required for embedding')
         pic = self.picture(thumbnail, 'png', box)
         nv = pic.find('p:nvPicPr', NS)
         cpr = nv.find('p:cNvPr', NS)
         cpr.set('name', f'Video {source}')
         shape_id = cpr.get('id')
         sub(cpr, 'a:hlinkClick', {'{'+NS['r']+'}id': '', 'action': 'ppaction://media'})
-        external = data is None
-        target = source if external else self.deck.asset(data, extension)
-        video_id = self.rid('video', target, external)
-        media_id = self.rid('http://schemas.microsoft.com/office/2007/relationships/media', target, external)
+        target = self.deck.asset(data, extension)
+        video_id = self.rid('video', target)
+        media_id = self.rid('http://schemas.microsoft.com/office/2007/relationships/media', target)
         nvpr = nv.find('p:nvPr', NS)
         sub(nvpr, 'a:videoFile', {'{'+NS['r']+'}link': video_id})
         ext = sub(sub(nvpr, 'p:extLst'), 'p:ext', {'uri': '{DAA4B4D4-6D71-4841-9C94-3DE7FCFB9EE3}'})
-        sub(ext, 'p14:media', {'{'+NS['r']+'}'+('link' if external else 'embed'): media_id})
+        sub(ext, 'p14:media', {'{'+NS['r']+'}embed': media_id})
         timing = self.root.find('p:timing', NS)
         if timing is None:
             timing = sub(self.root, 'p:timing', None, node('p:tnLst', None, node('p:par', None, node('p:cTn', {'id': 1, 'dur': 'indefinite', 'restart': 'never', 'nodeType': 'tmRoot'}, node('p:childTnLst')))))

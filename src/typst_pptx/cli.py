@@ -8,8 +8,10 @@ def main():
     parser.add_argument("input")
     parser.add_argument("output")
     parser.add_argument("--mode", choices=["background", "editable"], default="background")
-    parser.add_argument("--background-format", choices=["png", "jpeg", "svg"], default="png")
-    parser.add_argument("--ppi", type=float, default=144)
+    parser.add_argument("--background-format", choices=["png", "jpeg", "svg"], default="svg")
+    parser.add_argument("--vector-format", choices=["svg", "native"], default="svg",
+                        help="Vector paths in editable mode (default: svg)")
+    parser.add_argument("--ppi", type=float, default=192)
     parser.add_argument("--root")
     parser.add_argument("--media-root")
     parser.add_argument("--typst", default="typst")

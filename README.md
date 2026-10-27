@@ -13,18 +13,26 @@ python3 -m venv .venv
 pip install -e .
 ```
 
+```sh
+pip install pipx
+pipx install .
+```
+
 ## 컴파일
 
 ```sh
-# 페이지별 PNG를 실제 슬라이드 배경(p:bg)으로 지정
+# 기본값: 페이지별 SVG를 실제 슬라이드 배경(p:bg)으로 지정
  typst-pptx slides.typ slides.pptx --mode background
 
-# JPEG 또는 SVG 배경. SVG에는 이전 Office용 PNG 대체 이미지도 포함
+# PNG 또는 JPEG 배경. SVG에는 이전 Office용 PNG 대체 이미지도 포함
  typst-pptx slides.typ slides.pptx --background-format jpeg --ppi 192
- typst-pptx slides.typ slides.pptx --background-format svg
+ typst-pptx slides.typ slides.pptx --background-format png
 
-# 텍스트, 벡터 경로, 이미지를 각각 편집 가능한 PowerPoint 개체로 변환
+# 편집 모드 기본값: 편집 가능한 텍스트 + 개별 SVG 벡터 이미지
  typst-pptx slides.typ slides.pptx --mode editable
+
+# 벡터 경로 자체를 PowerPoint 도형으로 편집하려면
+ typst-pptx slides.typ slides.pptx --mode editable --vector-format native
 
 # 저장소 예제는 상위 폴더의 패키지를 가져오므로 프로젝트 루트를 지정
  typst-pptx examples/demo.typ build/demo.pptx --root . --mode editable
@@ -36,8 +44,9 @@ pip install -e .
 | 옵션 | 기본값 | 의미 |
 | --- | --- | --- |
 | `--mode` | `background` | `background` 또는 `editable` |
-| `--background-format` | `png` | `png`, `jpeg`, `svg` (배경 모드) |
-| `--ppi` | `144` | 배경 래스터 이미지 해상도 |
+| `--background-format` | `svg` | `png`, `jpeg`, `svg` (배경 모드) |
+| `--vector-format` | `svg` | `svg` 벡터 이미지 또는 `native` PowerPoint 도형 (편집 모드) |
+| `--ppi` | `192` | 래스터 배경·SVG 대체 이미지 해상도 |
 | `--root` | 입력 파일 폴더 | Typst 프로젝트 루트 |
 | `--media-root` | 입력 파일 폴더 | 상대 영상 경로를 해석할 폴더 |
 | `--typst` | `typst` | Typst 실행 파일 |
@@ -65,7 +74,7 @@ Python wheel 설치에도 `<Python 환경>/share/typst-pptx/pptx-media` 경로�
   playback: (autoplay: true, loop: true, muted: true),
 )
 
-// HTTP(S) URL은 다운로드하지 않고 외부 영상으로 연결합니다.
+// HTTP(S) URL도 다운로드한 영상 파일을 PPTX 내부에 포함합니다.
 #media("https://example.org/movie.mp4",
   width: 480pt,
   height: 270pt,
@@ -104,15 +113,19 @@ PPTX 내보내기에는 두 모드 모두 같은 위치에 썸네일을 가진 �
 
 ## 편집 모드의 변환 범위
 
-PDF의 문자와 폰트·크기·색상을 텍스트 상자로, 선·사각형·베지어 경로를 DrawingML
-도형으로, 이미지를 별도 그림 개체로 변환합니다. PDF의 그리기 순서를 유지합니다.
+PDF의 문자와 폰트·크기·색상을 텍스트 상자로, 선·사각형·베지어 경로를 개별 SVG
+벡터 이미지로, 래스터 이미지를 별도 그림 개체로 변환합니다. SVG에는 실제 벡터 경로가
+저장되며 PNG 대체 이미지는 SVG 미지원 프로그램을 위한 것입니다.
+`--vector-format native`를 지정하면 벡터 경로를 DrawingML 도형으로 변환합니다. PDF의 그리기 순서를 유지합니다.
 표와 차트는 원래 Typst의 선·텍스트 등 구성 개체로 편집하며 PowerPoint의 표/차트
 데이터 모델로 재구성하지는 않습니다. 수식은 추출 가능한 문자와 경로로 변환됩니다.
 
-그라디언트는 다른 내용과 분리된 그림 개체로 보존합니다. 분리할 수 없는 PDF 셰이딩은
+배경 모드의 SVG는 Typst의 벡터·그라디언트를 그대로 보존합니다.
+편집 모드의 PDF 그라디언트는 다른 내용과 분리된 래스터 그림 개체로 보존합니다. 분리할 수 없는 PDF 셰이딩은
 내용을 생략하지 않고 오류로 알립니다. PDF를 거치므로 복잡한 클리핑, 문자 배치·폰트
-대체는 원본과 차이가 날 수 있습니다. 정확한 외형이 우선이면 배경 모드를 사용하세요. Office에서 영상 코덱과
-HTTP 링크 재생을 지원해야 하며, 외부 URL 재생에는 네트워크가 필요합니다.
+대체는 원본과 차이가 날 수 있습니다. 정확한 외형이 우선이면 배경 모드를 사용하세요. Office에서 해당 영상 코덱을 지원해야 합니다.
+URL 영상은 컴파일할 때 다운로드하며, 내보낸 PPTX의 영상 재생에는 원본 파일이나 네트워크가
+필요하지 않습니다. 다운로드 실패 시 외부 링크로 대체하지 않고 컴파일 오류로 처리합니다.
 웹페이지 URL(예: 일반 동영상 시청 페이지)은 원시 영상 파일 URL과 다릅니다.
 
 ## Misc

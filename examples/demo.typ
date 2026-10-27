@@ -6,5 +6,5 @@ Editable text, shapes, and video.
 #rect(width: 200pt, height: 45pt, fill: rgb("#4775d1"), radius: 8pt)
 #pagebreak()
 = Video
-#media("https://example.com/video.mp4", width: 360pt, height: 202.5pt,
+#media("../tests/fixtures/video.mp4", width: 360pt, height: 202.5pt,
   playback: (autoplay: true, loop: true, muted: true))
