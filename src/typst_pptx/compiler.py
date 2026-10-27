@@ -15,6 +15,8 @@ import pymupdf as fitz
 from PIL import Image
 from .ooxml import Deck
 from .vector import drawing_svg
+from .images import image_placement
+from .video import VideoProcessor
 
 
 def _run(command):
@@ -48,7 +50,7 @@ def _playback(value):
     return value
 
 
-def _media(records, document, media_root):
+def _media(records, document, media_root, processor):
     result = {}
     for record in records:
         if record.get('kind') != 'typst-pptx-media' or record.get('version') != 1:
@@ -66,8 +68,6 @@ def _media(records, document, media_root):
         source = record['source']
         parsed = urlsplit(source)
         extension = Path(parsed.path).suffix.lower().lstrip('.') or 'mp4'
-        if extension not in ('mp4', 'm4v', 'mov', 'avi', 'wmv', 'webm', 'mpeg', 'mpg'):
-            raise ValueError(f'Unsupported video extension: {extension}')
         if parsed.scheme in ('http', 'https'):
             if not parsed.netloc:
                 raise ValueError(f'Invalid video URL: {source}')
@@ -90,6 +90,7 @@ def _media(records, document, media_root):
             data = path.read_bytes()
         if not data:
             raise ValueError(f'Video file is empty: {source}')
+        data, extension = processor.prepare(data, extension, source)
         entry = dict(source=source, data=data, extension=extension, box=box,
                      thumbnail=_png(page, clip=rect), playback=_playback(record.get('playback', {})))
         result.setdefault(page_number - 1, []).append(entry)
@@ -135,18 +136,7 @@ def _editable(slide, page, vector_format="svg", ppi=192):
             else:
                 slide.drawing(item)
         elif kind == 'image':
-            # Extracted images remain independently movable/replacable.
-            data = item['image']
-            if item.get('mask'):
-                image = Image.open(io.BytesIO(data)).convert('RGBA')
-                image.putalpha(Image.open(io.BytesIO(item['mask'])).convert('L'))
-                output = io.BytesIO()
-                image.save(output, 'PNG')
-                data = output.getvalue()
-                extension = 'png'
-            else:
-                extension = item['ext']
-            slide.picture(data, extension, _box(item['bbox']))
+            slide.picture(**image_placement(item, ppi))
         else:
             # One textbox per PDF text run; it remains editable in PowerPoint.
             chars = item['chars']
@@ -168,13 +158,16 @@ def _editable(slide, page, vector_format="svg", ppi=192):
 
 
 def compile_pptx(input, output, *, mode='background', background_format='svg', ppi=192,
-                 vector_format='svg',
+                 vector_format='svg', video_conversion='ask',
+                 confirm_video_conversion=None, ffprobe='ffprobe', ffmpeg='ffmpeg',
                  root=None, media_root=None, typst='typst', inputs=(), font_path=()):
     """Export all Typst pages, embedding local and downloaded HTTP(S) videos.
 
     ``root``, ``inputs`` and ``font_path`` are passed consistently to both
     rendering and metadata evaluation. Output is atomically replaced on success.
     """
+    if video_conversion not in ('ask', 'convert', 'error'):
+        raise ValueError('video_conversion must be ask, convert, or error')
     if mode not in ('background', 'editable'):
         raise ValueError('mode must be background or editable')
     if background_format not in ('png', 'jpeg', 'svg'):
@@ -205,7 +198,8 @@ def compile_pptx(input, output, *, mode='background', background_format='svg', p
             first = document[0].rect
             if any(abs(p.rect.width-first.width) > .01 or abs(p.rect.height-first.height) > .01 for p in document):
                 raise ValueError('PowerPoint requires every page to have the same size')
-            videos = _media(records, document, video_root)
+            processor = VideoProcessor(work, video_conversion, confirm_video_conversion, ffprobe, ffmpeg)
+            videos = _media(records, document, video_root, processor)
             deck = Deck(first.width, first.height)
             for i, page in enumerate(document):
                 slide = deck.slide()

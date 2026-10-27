@@ -14,6 +14,9 @@ Typst 0.15+ media thumbnail and PowerPoint metadata package.
 `typst-pptx --media-root` (default: the input document directory).
 Local and HTTP(S) videos are copied into the PPTX; URL videos are downloaded
 at compile time and do not require a network connection during playback.
+The compiler checks codecs with ffprobe. For media outside its H.264/AAC
+compatibility profile, the CLI asks before converting with FFmpeg; originals
+are preserved. Use --video-conversion convert for explicit unattended approval.
 Pass thumbnails as `path(...)` so they resolve in the calling document.
 The default thumbnail is a built-in play image. `compatible: "none"` renders
 only the image and omits PowerPoint video metadata. Ordinary Typst always

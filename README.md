@@ -5,7 +5,7 @@ Typst 자체를 수정하지 않고 설치된 Typst CLI를 호출합니다.
 
 ## 설치
 
-Python 3.10 이상과 Typst 0.15 이상이 필요합니다.
+Python 3.10 이상과 Typst 0.15 이상이 필요합니다. 영상이 있는 문서를 컴파일하는 과정에서 FFmpeg의 `ffprobe`와 `ffmpeg`가 필요합니다.
 
 ```sh
 python3 -m venv .venv
@@ -49,6 +49,9 @@ pipx install .
 | `--ppi` | `192` | 래스터 배경·SVG 대체 이미지 해상도 |
 | `--root` | 입력 파일 폴더 | Typst 프로젝트 루트 |
 | `--media-root` | 입력 파일 폴더 | 상대 영상 경로를 해석할 폴더 |
+| `--video-conversion` | `ask` | 호환 프로필 미충족 시 `ask` 확인, `convert` 변환, `error` 중단 |
+| `--ffprobe` | `ffprobe` | 영상 검사 실행 파일 |
+| `--ffmpeg` | `ffmpeg` | 영상 변환 실행 파일 |
 | `--typst` | `typst` | Typst 실행 파일 |
 | `--input KEY=VALUE` | 없음 | `sys.inputs` 값; 여러 번 지정 가능 |
 | `--font-path PATH` | 없음 | 추가 폰트 검색 폴더; 여러 번 지정 가능 |
@@ -96,7 +99,7 @@ media(source, thumbnail: none, width: 100%, height: 180pt,
 ```
 
 - `source`: 영상 URL 또는 파일 경로 문자열. 상대 영상 경로는 컴파일러의 `--media-root`
-  기준입니다. 로컬 영상은 mp4, m4v, mov, avi, wmv, webm, mpeg, mpg 확장자를 지원합니다.
+  기준입니다. 영상 코덱과 컨테이너는 컴파일 시 검사하며, 필요하면 승인 후 MP4로 변환합니다.
 - `thumbnail`: `path("poster.png")` 또는 이미지 bytes. 지정하지 않으면 내장 재생 아이콘
   이미지가 사용됩니다. 썸네일은 지정한 영역을 `cover` 방식으로 채웁니다.
 - `compatible`: `"pptx"`가 기본값이며 영상 메타데이터를 기록합니다. `"none"`이면 기록하지
@@ -111,12 +114,49 @@ media(source, thumbnail: none, width: 100%, height: 180pt,
 PPTX 내보내기에는 두 모드 모두 같은 위치에 썸네일을 가진 영상 개체가 추가됩니다.
 영상은 페이지 사이에 나뉘지 않으며 한 페이지 안에 완전히 들어가야 합니다.
 
+## 영상 코덱 검사와 변환
+
+영상 파일은 로컬 경로와 URL 모두 `ffprobe`로 실제 코덱을 검사합니다. 확장자만으로
+지원 여부를 판단하지 않습니다. 운영체제별 차이를 줄이기 위한 공통 호환 프로필은
+H.264 영상, 8비트 4:2:0(`yuv420p`/`yuvj420p`), AAC 음성(또는 무음), MP4/M4V/MOV입니다.
+이 프로필 밖의 모든 형식이 모든 PowerPoint에서 재생 불가능하다는 의미는 아닙니다.
+Microsoft의 [권장 형식](https://support.microsoft.com/en-us/powerpoint/video-and-audio-file-formats-supported-in-powerpoint)은 H.264/AAC MP4입니다.
+
+기본 `ask`에서는 프로필에 맞지 않는 영상의 현재 코덱과 이유를 표시하고
+`H.264/AAC MP4로 변환하여 포함할까요? [y/N]`로 묻습니다. 명시적으로 승인해야 변환하며,
+거절·빈 입력·입력 종료 시 컴파일을 중단합니다. 원본 파일과 기존 PPTX 출력은 유지됩니다.
+승인한 변환은 임시 파일에서 수행하고 결과를 다시 검사한 뒤 PPTX에 포함합니다.
+같은 영상이 여러 슬라이드에서 반복되면 한 번만 검사하고 확인·변환합니다.
+
+```sh
+# 기본 동작: 필요한 경우 변환 여부 확인
+ typst-pptx slides.typ slides.pptx
+
+# 스크립트/CI에서 필요한 변환을 미리 승인
+ typst-pptx slides.typ slides.pptx --video-conversion convert
+
+# 호환 프로필에 맞지 않으면 변환 없이 오류로 중단
+ typst-pptx slides.typ slides.pptx --video-conversion error
+```
+
+대화형 터미널이 없으면 `ask`가 자동으로 승인하지 않으며 위의 명시적 옵션을 안내합니다.
+검사 도구 부재, 손상된 영상, 변환 실패도 오류로 처리하며 검사를 생략하지 않습니다.
+파일 확장자와 관계없이 FFmpeg가 읽을 수 있는 영상(예: MKV)도 검사·변환 대상으로 받을 수 있습니다.
+변환 시 첫 실제 영상 트랙과 음성 트랙을 사용하며, 원본 컨테이너의 자막·첨부 파일은 포함하지 않습니다.
+
+Python API는 기본적으로 사용자 입력을 직접 읽지 않습니다. `video_conversion="convert"` 또는
+`"error"`를 지정하거나, `confirm_video_conversion(source, inspection) -> bool` 콜백으로
+확인 UI를 연결하세요. `inspection.description`과 `inspection.reasons`에 검사 결과가 있습니다.
+
 ## 편집 모드의 변환 범위
 
 PDF의 문자와 폰트·크기·색상을 텍스트 상자로, 선·사각형·베지어 경로를 개별 SVG
 벡터 이미지로, 래스터 이미지를 별도 그림 개체로 변환합니다. SVG에는 실제 벡터 경로가
 저장되며 PNG 대체 이미지는 SVG 미지원 프로그램을 위한 것입니다.
 `--vector-format native`를 지정하면 벡터 경로를 DrawingML 도형으로 변환합니다. PDF의 그리기 순서를 유지합니다.
+래스터 이미지는 PDF의 회전 전 크기, 회전각과 반전을 유지합니다. 회전 후 바깥 영역에
+원본 이미지를 늘려 넣지 않으므로 세로 이미지의 비율도 보존합니다. 기울이기 변환은
+SVG에 원래 변환 행렬을 기록하여 보존합니다.
 표와 차트는 원래 Typst의 선·텍스트 등 구성 개체로 편집하며 PowerPoint의 표/차트
 데이터 모델로 재구성하지는 않습니다. 수식은 추출 가능한 문자와 경로로 변환됩니다.
 

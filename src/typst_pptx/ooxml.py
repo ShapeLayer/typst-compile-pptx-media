@@ -161,7 +161,7 @@ class Slide:
         self.next_id += 1
         return result
 
-    def picture(self, data, extension, box, background=False, svg=None):
+    def picture(self, data, extension, box, background=False, svg=None, rotation=0, flip_v=False):
         rid = self.rid('image', self.deck.asset(data, extension))
         blip = node('a:blip', {'{'+NS['r']+'}embed': rid})
         if svg is not None:
@@ -177,7 +177,11 @@ class Slide:
         pic = sub(self.tree, 'p:pic', None, node('p:nvPicPr', None, identity, node('p:cNvPicPr', None, node('a:picLocks', {'noChangeAspect': 1})), node('p:nvPr')),
             node('p:blipFill', None, blip, node('a:stretch', None, node('a:fillRect'))))
         sp = sub(pic, 'p:spPr')
-        transform(sp, box)
+        xf = transform(sp, box)
+        if rotation:
+            xf.set('rot', str(round(rotation * 60000)))
+        if flip_v:
+            xf.set('flipV', '1')
         sub(sp, 'a:prstGeom', {'prst': 'rect'}, node('a:avLst'))
         return pic
 

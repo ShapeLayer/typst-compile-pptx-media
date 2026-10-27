@@ -1,5 +1,6 @@
 import io
 import json
+import math
 from pathlib import Path
 import posixpath
 import shutil
@@ -125,6 +126,47 @@ class CompilerTests(unittest.TestCase):
             pngs = [n for n in archive.namelist() if n.endswith('.png')]
             self.assertTrue(any(Image.open(io.BytesIO(archive.read(n))).getchannel('A').getextrema()[1] > 0 for n in pngs))
 
+    def test_portrait_image_rotation_scale_and_reflection(self):
+        image = Image.new('RGB', (80, 160), 'red')
+        image.paste('blue', (0, 80, 80, 160))
+        image.save(self.work / 'portrait.png')
+        picture = 'image("portrait.png", height: 120pt)'
+        bodies = [picture,
+            'rotate(90deg, reflow: true, ' + picture + ')',
+            'rotate(270deg, reflow: true, ' + picture + ')',
+            'rotate(33deg, reflow: true, ' + picture + ')',
+            'scale(x: -100%, reflow: true, ' + picture + ')',
+            'scale(y: -100%, reflow: true, ' + picture + ')',
+            'rotate(90deg, reflow: true, scale(x: -100%, ' + picture + '))']
+        self.write('\n#pagebreak()\n'.join('#' + body for body in bodies))
+        pdf = self.work / 'expected.pdf'
+        subprocess.run(['typst', 'compile', str(self.source), str(pdf), '--root', str(ROOT)], check=True)
+        self.compile(mode='editable')
+        with pymupdf.open(pdf) as document, ZipFile(self.output) as archive:
+            self.assertEqual(len(document), len(bodies))
+            self.assert_package(archive)
+            for number, page in enumerate(document, 1):
+                block = next(b for b in page.get_text('dict')['blocks'] if b['type'] == 1)
+                root = self.xml(archive, f'ppt/slides/slide{number}.xml')
+                xf = root.find('.//p:pic/p:spPr/a:xfrm', NS)
+                off, ext = xf.find('a:off', NS), xf.find('a:ext', NS)
+                x, y = int(off.get('x'))/12700, int(off.get('y'))/12700
+                w, h = int(ext.get('cx'))/12700, int(ext.get('cy'))/12700
+                # Rotation must not swap the original image's width/height.
+                self.assertAlmostEqual(w, 60, places=3)
+                self.assertAlmostEqual(h, 120, places=3)
+                angle = math.radians(int(xf.get('rot', 0))/60000)
+                for u, v in [(0, 0), (1, 0), (0, 1), (1, 1), (.5, .5)]:
+                    dx, dy = (u-.5)*w, (v-.5)*h
+                    if xf.get('flipV') == '1':
+                        dy = -dy
+                    actual = (x+w/2 + math.cos(angle)*dx-math.sin(angle)*dy,
+                              y+h/2 + math.sin(angle)*dx+math.cos(angle)*dy)
+                    a, b, c, d, e, f = block['transform']
+                    expected = (a*u+c*v+e, b*u+d*v+f)
+                    for got, want in zip(actual, expected):
+                        self.assertAlmostEqual(got, want, places=3)
+
     def test_local_video_embedded_with_thumbnail_and_playback(self):
         self.write('#media("video.mp4", thumbnail: path("thumb.png"), width: 160pt, height: 90pt, playback: (autoplay: true, loop: true, muted: true))')
         for mode in ('background', 'editable'):
@@ -140,6 +182,28 @@ class CompilerTests(unittest.TestCase):
                     video = [n for n in archive.namelist() if n.endswith('.mp4')]
                     self.assertEqual(len(video), 1)
                     self.assertEqual(archive.read(video[0]), (self.work / 'video.mp4').read_bytes())
+
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg tools required')
+    def test_codec_confirmation_conversion_and_preserved_output(self):
+        original = self.work / 'incompatible.avi'
+        subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-i', str(self.work / 'video.mp4'),
+                        '-c:v', 'mpeg4', '-c:a', 'pcm_s16le', str(original)], check=True)
+        original_bytes = original.read_bytes()
+        self.write('#media("incompatible.avi", width: 160pt, height: 90pt)')
+        self.output.write_bytes(b'previous')
+        with self.assertRaisesRegex(RuntimeError, 'declined'):
+            self.compile(confirm_video_conversion=lambda *args: False)
+        self.assertEqual(self.output.read_bytes(), b'previous')
+        self.compile(confirm_video_conversion=lambda *args: True)
+        with ZipFile(self.output) as archive:
+            self.assert_package(archive)
+            video = next(n for n in archive.namelist() if n.endswith('.mp4'))
+            extracted = self.work / 'extracted.mp4'
+            extracted.write_bytes(archive.read(video))
+            from typst_pptx.video import inspect_video
+            self.assertTrue(inspect_video(extracted, 'mp4').compatible)
+            self.assertFalse(any(n.endswith('.avi') for n in archive.namelist()))
+        self.assertEqual(original.read_bytes(), original_bytes)
 
     def test_remote_video_embedded_and_click_volume(self):
         url = 'https://example.org/clip.mp4?a=1&b=2'
@@ -263,7 +327,7 @@ class CompilerTests(unittest.TestCase):
 
     def test_invalid_parameters(self):
         self.write('Hello')
-        for kwargs in ({'ppi': 0}, {'ppi': float('nan')}, {'mode': 'bad'}, {'background_format': 'pdf'}, {'vector_format': 'bad'}):
+        for kwargs in ({'ppi': 0}, {'ppi': float('nan')}, {'mode': 'bad'}, {'background_format': 'pdf'}, {'vector_format': 'bad'}, {'video_conversion': 'bad'}):
             with self.assertRaises(ValueError):
                 self.compile(**kwargs)
         for body in ('#media("v.mp4", compatible: "pdf")', '#media("v.mp4", playback: (muted: 1))', '#media("v.mp4", playback: (volume: 2))'):
