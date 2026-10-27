@@ -386,7 +386,7 @@ class CompilerTests(unittest.TestCase):
 
     def test_invalid_parameters(self):
         self.write('Hello')
-        for kwargs in ({'ppi': 0}, {'ppi': float('nan')}, {'mode': 'bad'}, {'background_format': 'pdf'}, {'vector_format': 'bad'}, {'video_conversion': 'bad'}):
+        for kwargs in ({'ppi': 0}, {'ppi': float('nan')}, {'mode': 'bad'}, {'background_format': 'pdf'}, {'vector_format': 'bad'}, {'video_conversion': 'bad'}, {'video_foreground': 'bad'}):
             with self.assertRaises(ValueError):
                 self.compile(**kwargs)
         for body in ('#media("v.mp4", compatible: "pdf")', '#media("v.mp4", playback: (muted: 1))', '#media("v.mp4", playback: (volume: 2))'):
@@ -448,6 +448,74 @@ class CompilerTests(unittest.TestCase):
             self.assertNotIn(b'data:image/svg+xml', svg)
             self.assertTrue(any(p.get('d') == 'M0 0L80 40' for p in root.iter('{http://www.w3.org/2000/svg}path')))
             self.assertEqual(len(list(root.iter('{http://www.w3.org/2000/svg}svg'))), 2)
+
+
+    def test_background_video_keeps_foreground_above_playback(self):
+        self.write('#place(top + left, media("video.mp4", thumbnail: path("thumb.png"), width: 160pt, height: 90pt))\n#place(top + left, text(fill: green)[Foreground title])')
+        for fmt in ('svg', 'png', 'jpeg'):
+            with self.subTest(format=fmt):
+                self.compile(background_format=fmt, video_foreground="composite")
+                with ZipFile(self.output) as archive:
+                    root = self.xml(archive, 'ppt/slides/slide1.xml')
+                    pictures = root.findall('p:cSld/p:spTree/p:pic', NS)
+                    self.assertEqual(len(pictures), 2)
+                    self.assertIsNotNone(pictures[1].find('p:nvPicPr/p:nvPr/a:videoFile', NS))
+                    self.assertIsNone(pictures[0].find('p:nvPicPr/p:nvPr/a:videoFile', NS))
+                    rid = pictures[0].find('p:blipFill/a:blip', NS).get('{'+NS['r']+'}embed')
+                    rels = self.xml(archive, 'ppt/slides/_rels/slide1.xml.rels')
+                    target = next(r.get('Target') for r in rels if r.get('Id') == rid)
+                    with Image.open(io.BytesIO(archive.read('ppt/'+target.removeprefix('../')))) as foreground:
+                        self.assertEqual(foreground.mode, 'RGBA')
+                        self.assertEqual(foreground.getchannel('A').getextrema(), (0, 255))
+                    if fmt == 'svg':
+                        # Verify the embedded movie, not only its still poster:
+                        # PowerPoint may draw its video surface above every shape.
+                        movie_target = next(r.get('Target') for r in rels if r.get('Type').endswith('/video'))
+                        movie = self.work / 'embedded.mp4'
+                        movie.write_bytes(archive.read('ppt/'+movie_target.removeprefix('../')))
+                        decoded = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(movie),
+                            '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', '-'],
+                            capture_output=True, check=True).stdout
+                        with Image.open(io.BytesIO(decoded)) as frame:
+                            self.assertGreater(sum(g > 25 and r < 80 for r, g, b in frame.convert('RGB').getdata()), 5)
+
+
+
+    def test_foreground_policy_requires_confirmation_and_preserves_output(self):
+        self.write('#place(top + left, media("video.mp4", thumbnail: path("thumb.png"), width: 160pt, height: 90pt))\n#place(top + left, text(fill: green)[Foreground title])')
+        self.output.write_bytes(b'previous output')
+        for kwargs in ({}, {'video_foreground': 'error'}):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(RuntimeError, 'foreground'):
+                self.compile(**kwargs)
+            self.assertEqual(self.output.read_bytes(), b'previous output')
+        calls = []
+        def decline(page, source):
+            calls.append((page, source))
+            return False
+        with self.assertWarnsRegex(UserWarning, 'Original video preserved'):
+            self.compile(confirm_video_foreground=decline)
+        self.assertEqual(calls, [(1, 'video.mp4')])
+        with ZipFile(self.output) as archive:
+            movie = next(n for n in archive.namelist() if n.endswith('.mp4'))
+            self.assertEqual(archive.read(movie), (self.work/'video.mp4').read_bytes())
+        with self.assertWarnsRegex(UserWarning, 'Original video preserved'):
+            self.compile(video_foreground='preserve', confirm_video_foreground=lambda *a: self.fail('must not prompt'))
+        with patch('typst_pptx.video.VideoProcessor.composite_foreground', wraps=None) as compose:
+            self.write('#media("video.mp4", thumbnail: path("thumb.png"), width: 160pt, height: 90pt)')
+            self.compile(confirm_video_foreground=lambda *a: self.fail('no overlap must not prompt'))
+            compose.assert_not_called()
+
+    def test_foreground_approval_is_explicit(self):
+        self.write('#place(top + left, media("video.mp4", thumbnail: path("thumb.png"), width: 160pt, height: 90pt))\n#place(top + left, text(fill: green)[Foreground title])')
+        calls = []
+        def approve(page, source):
+            calls.append((page, source))
+            return True
+        self.compile(confirm_video_foreground=approve)
+        self.assertEqual(calls, [(1, 'video.mp4')])
+        with ZipFile(self.output) as archive:
+            movie = next(n for n in archive.namelist() if n.endswith('.mp4'))
+            self.assertNotEqual(archive.read(movie), (self.work/'video.mp4').read_bytes())
 
 
 if __name__ == '__main__':

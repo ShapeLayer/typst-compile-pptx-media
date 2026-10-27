@@ -144,3 +144,38 @@ class VideoProcessor:
 
     def aspect_ratio(self, data, extension):
         return self.display_aspects[(hashlib.sha256(data).hexdigest(), extension)]
+
+    def composite_foreground(self, data, extension, foreground):
+        """Embed foreground pixels into a copy for Office's topmost video player."""
+        key = hashlib.sha256(data + foreground).hexdigest()
+        output = self.directory / f'video-{key}-foreground.mp4'
+        if output.exists():
+            return output.read_bytes(), 'mp4'
+        source = self.directory / f'video-{key}.{extension}'
+        overlay = self.directory / f'video-{key}-foreground.png'
+        source.write_bytes(data)
+        overlay.write_bytes(foreground)
+        raw = _invoke([self.ffprobe, '-v', 'error', '-select_streams', 'v:0',
+                       '-show_streams', '-of', 'json', str(source)], 'FFprobe', timeout=30)
+        stream = json.loads(raw)['streams'][0]
+        width, height = int(stream['width']), int(stream['height'])
+        # FFmpeg autorotates on decode; choose a square-pixel display canvas.
+        aspect = display_aspect_ratio(stream)
+        rotation = float(stream.get('tags', {}).get('rotate', 0))
+        for side in stream.get('side_data_list', []):
+            if 'rotation' in side:
+                rotation = float(side['rotation'])
+                break
+        if abs(math.sin(math.radians(rotation))) > .5:
+            height = width
+        width = max(2, round(height * aspect / 2) * 2)
+        height = max(2, round(height / 2) * 2)
+        filters = (f'[0:v]scale={width}:{height},setsar=1[base];'
+                   f'[1:v]scale={width}:{height}[front];'
+                   '[base][front]overlay=0:0:eof_action=repeat:format=auto[v]')
+        _invoke([self.ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+                 '-i', str(source), '-i', str(overlay), '-filter_complex', filters,
+                 '-map', '[v]', '-map', '0:a?', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                 '-crf', '18', '-preset', 'fast', '-c:a', 'copy', '-map_metadata', '-1',
+                 '-movflags', '+faststart', str(output)], 'FFmpeg')
+        return output.read_bytes(), 'mp4'

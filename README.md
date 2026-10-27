@@ -50,6 +50,7 @@ pipx install .
 | `--root` | 입력 파일 폴더 | Typst 프로젝트 루트 |
 | `--media-root` | 입력 파일 폴더 | 상대 영상 경로를 해석할 폴더 |
 | `--video-conversion` | `ask` | 호환 프로필 미충족 시 `ask` 확인, `convert` 변환, `error` 중단 |
+| `--video-foreground` | `ask` | 배경 모드에서 전경 겹침 시 `ask` 질문, `composite` 합성, `preserve` 합성 없이 유지, `error` 중단 |
 | `--ffprobe` | `ffprobe` | 영상 검사 실행 파일 |
 | `--ffmpeg` | `ffmpeg` | 영상 변환 실행 파일 |
 | `--typst` | `typst` | Typst 실행 파일 |
@@ -172,6 +173,27 @@ SVG에 원래 변환 행렬을 기록하여 보존합니다.
 가져온 SVG 그림도 내부 벡터 도형을 페이지에 직접 포함하여 PowerPoint에서 표시합니다.
 SVG 안의 사진은 EXIF 방향을 픽셀에 반영하고 방향 메타데이터를 제거하여,
 PowerPoint에서도 PDF와 같은 방향과 비율로 표시합니다.
+배경 모드에서 영상은 썸네일의 원래 그리기 순서에 삽입됩니다. 영상 뒤에 그려진
+제목·머리말·쪽 번호는 투명한 전경 레이어로 보존합니다. PowerPoint의 영상 우선 표시로
+전경이 가려질 수 있는 겹침을 감지하면 기본적으로 해당 페이지와 영상 경로를 알리고
+합성 여부를 질문합니다. 예를 선택하면 내장 영상 복사본에 겹치는 전경을 합성하고
+H.264 MP4로 다시 인코딩합니다. 원본 파일은 변경하지 않습니다. 아니오(기본 응답)는
+경고와 함께 합성 없이 계속합니다. 입력이 종료되면 컴파일을 중단합니다.
+
+```sh
+# 겹침이 있으면 질문 (기본값)
+typst-pptx main.typ main.pptx --video-foreground ask
+# 질문 없이 합성 / 합성 없이 유지 / 겹침이 있으면 중단
+typst-pptx main.typ main.pptx --video-foreground composite
+typst-pptx main.typ main.pptx --video-foreground preserve
+typst-pptx main.typ main.pptx --video-foreground error
+```
+
+비대화형 실행에서 `ask`가 겹침을 발견하면 명시적 옵션을 요구하며 기존 출력 파일을
+보존합니다. 겹침이 없으면 질문이나 합성이 없습니다. 코덱 변환 정책인
+`--video-conversion`과는 독립된 옵션입니다. Python API에서는
+`video_foreground="ask"`와 `confirm_video_foreground(page, source)` 콜백을 사용하며,
+콜백의 `True`는 합성, `False`는 합성 없이 계속하기입니다.
 편집 모드의 PDF 그라디언트는 다른 내용과 분리된 래스터 그림 개체로 보존합니다. 분리할 수 없는 PDF 셰이딩은
 내용을 생략하지 않고 오류로 알립니다. PDF를 거치므로 복잡한 클리핑, 문자 배치·폰트
 대체는 원본과 차이가 날 수 있습니다. 정확한 외형이 우선이면 배경 모드를 사용하세요. Office에서 해당 영상 코덱을 지원해야 합니다.

@@ -17,6 +17,7 @@ from .ooxml import Deck
 from .vector import drawing_svg
 from .images import image_placement, normalize_svg_images
 from .video import VideoProcessor
+from .layers import split_media_layers
 
 
 def _run(command):
@@ -167,15 +168,81 @@ def _editable(slide, page, vector_format="svg", ppi=192):
                        size, item['color'], item['flags'], rotation, item['opacity'])
 
 
+def _layered_background(slide, svg, videos, page, ppi, background_format, processor, foreground_policy, confirm_foreground):
+    """Keep foreground graphics above videos, including in background mode."""
+    box = (0, 0, page.rect.width, page.rect.height)
+    video_pictures = []
+    for index, (segment, media) in enumerate(split_media_layers(svg, videos)):
+        if segment is not None:
+            segment = normalize_svg_images(segment)
+            with fitz.open(stream=segment, filetype='svg') as doc:
+                data = doc[0].get_pixmap(matrix=fitz.Matrix(ppi/72, ppi/72),
+                                         alpha=index != 0).tobytes('png')
+            extension = 'png'
+            if index == 0 and background_format == 'jpeg':
+                output = io.BytesIO()
+                Image.open(io.BytesIO(data)).convert('RGB').save(output, 'JPEG', quality=95)
+                data, extension = output.getvalue(), 'jpeg'
+            slide.picture(data, extension, box, background=index == 0,
+                          svg=segment if background_format == 'svg' else None)
+        if media is not None:
+            video, poster, foreground = media
+            x, y, w, h = video['box']
+            with fitz.open(stream=normalize_svg_images(poster), filetype='svg') as doc:
+                thumbnail = doc[0].get_pixmap(matrix=fitz.Matrix(ppi/72, ppi/72),
+                    clip=fitz.Rect(x, y, x+w, y+h), alpha=False).tobytes('png')
+            if foreground is not None:
+                with fitz.open(stream=normalize_svg_images(foreground), filetype='svg') as doc:
+                    overlay = doc[0].get_pixmap(matrix=fitz.Matrix(ppi/72, ppi/72),
+                        clip=fitz.Rect(x, y, x+w, y+h), alpha=True).tobytes('png')
+                with Image.open(io.BytesIO(overlay)) as image:
+                    overlaps = image.getchannel('A').getbbox() is not None
+                composite = False
+                if overlaps:
+                    detail = f'Page {page.number + 1}, video {video["source"]!r}: foreground content overlaps the video and may be hidden during PowerPoint playback.'
+                    if foreground_policy == 'error':
+                        raise RuntimeError(detail + ' Use --video-foreground composite or preserve.')
+                    if foreground_policy == 'ask':
+                        if confirm_foreground is None:
+                            raise RuntimeError(detail + ' Confirmation required: use --video-foreground composite or preserve.')
+                        composite = confirm_foreground(page.number + 1, video['source'])
+                        if type(composite) is not bool:
+                            raise ValueError('Foreground confirmation callback must return True or False')
+                    else:
+                        composite = foreground_policy == 'composite'
+                    if not composite:
+                        warnings.warn(detail + ' Original video preserved without compositing.', stacklevel=2)
+                if composite:
+                    data, extension = processor.composite_foreground(video['data'], video['extension'], overlay)
+                    video = {**video, 'data': data, 'extension': extension}
+                    with Image.open(io.BytesIO(thumbnail)) as still, Image.open(io.BytesIO(overlay)) as front:
+                        output = io.BytesIO()
+                        Image.alpha_composite(still.convert('RGBA'), front).convert('RGB').save(output, 'PNG')
+                        thumbnail = output.getvalue()
+            slide.video(**{**video, 'thumbnail': thumbnail})
+            if foreground is not None and composite:
+                video_pictures.append(slide.tree[-1])
+    # The native player is topmost on some Office versions. Put its poster
+    # (which now includes overlapping foreground) at the same level too.
+    # This also keeps transparent full-page foreground shapes from eating
+    # click-to-play events before playback starts.
+    for picture in video_pictures:
+        slide.tree.remove(picture)
+        slide.tree.append(picture)
+
+
 def compile_pptx(input, output, *, mode='background', background_format='svg', ppi=192,
                  vector_format='svg', video_conversion='ask',
-                 confirm_video_conversion=None, ffprobe='ffprobe', ffmpeg='ffmpeg',
+                 confirm_video_conversion=None, video_foreground='ask',
+                 confirm_video_foreground=None, ffprobe='ffprobe', ffmpeg='ffmpeg',
                  root=None, media_root=None, typst='typst', inputs=(), font_path=()):
     """Export all Typst pages, embedding local and downloaded HTTP(S) videos.
 
     ``root``, ``inputs`` and ``font_path`` are passed consistently to both
     rendering and metadata evaluation. Output is atomically replaced on success.
     """
+    if video_foreground not in ('ask', 'composite', 'preserve', 'error'):
+        raise ValueError('video_foreground must be ask, composite, preserve, or error')
     if video_conversion not in ('ask', 'convert', 'error'):
         raise ValueError('video_conversion must be ask, convert, or error')
     if mode not in ('background', 'editable'):
@@ -213,6 +280,11 @@ def compile_pptx(input, output, *, mode='background', background_format='svg', p
             deck = Deck(first.width, first.height)
             for i, page in enumerate(document):
                 slide = deck.slide()
+                if mode == 'background' and videos.get(i):
+                    svg_path = work / f'page-{i+1}.svg'
+                    _run([typst, 'compile', str(source), str(svg_path), '--format', 'svg', '--pages', str(i+1), *common])
+                    _layered_background(slide, svg_path.read_bytes(), videos[i], page, ppi, background_format, processor, video_foreground, confirm_video_foreground)
+                    continue
                 if mode == 'editable':
                     _editable(slide, page, vector_format, ppi)
                 else:

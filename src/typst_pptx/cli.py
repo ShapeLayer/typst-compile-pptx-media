@@ -18,6 +18,19 @@ def confirm_video_conversion(source, inspection):
         return False
 
 
+def confirm_video_foreground(page, source):
+    print(f"{page}페이지 영상 {source!r}: 영상 위에 겹치는 제목·머리말 등의 요소가 있습니다.", file=sys.stderr)
+    print("PowerPoint에서 재생 중 가려질 수 있습니다.", file=sys.stderr)
+    if not sys.stdin.isatty():
+        raise RuntimeError('대화형 입력이 필요합니다. 합성하려면 --video-foreground composite, 원본 영상을 유지하려면 --video-foreground preserve, 중단하려면 --video-foreground error를 지정하세요.')
+    print("겹치는 요소를 내장 영상에 합성할까요? H.264로 다시 인코딩하며 원본 파일은 수정하지 않습니다. 아니오를 선택하면 합성 없이 계속합니다. [y/N] ",
+          file=sys.stderr, end='', flush=True)
+    try:
+        return input().strip().lower() in ('y', 'yes', '예')
+    except EOFError:
+        raise RuntimeError('입력이 종료되어 컴파일을 중단합니다. --video-foreground composite 또는 preserve를 지정하세요.')
+
+
 def main():
     parser = argparse.ArgumentParser(description="Compile Typst pages to PowerPoint")
     parser.add_argument("input")
@@ -29,6 +42,8 @@ def main():
     parser.add_argument("--ppi", type=float, default=192)
     parser.add_argument("--video-conversion", choices=["ask", "convert", "error"], default="ask",
                         help="Incompatible video handling (default: ask before conversion)")
+    parser.add_argument("--video-foreground", choices=["ask", "composite", "preserve", "error"], default="ask",
+                        help="Overlapping foreground in background mode: ask, composite into video, preserve original, or error (default: ask)")
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--root")
@@ -38,7 +53,8 @@ def main():
     parser.add_argument("--font-path", action="append", default=[])
     args = vars(parser.parse_args())
     try:
-        compile_pptx(**args, confirm_video_conversion=confirm_video_conversion)
+        compile_pptx(**args, confirm_video_conversion=confirm_video_conversion,
+                     confirm_video_foreground=confirm_video_foreground)
     except (ValueError, OSError, RuntimeError) as exc:
         print(f"typst-pptx: {exc}", file=sys.stderr)
         return 1
