@@ -15,7 +15,7 @@ import pymupdf as fitz
 from PIL import Image
 from .ooxml import Deck
 from .vector import drawing_svg
-from .images import image_placement
+from .images import image_placement, normalize_svg_images
 from .video import VideoProcessor
 
 
@@ -91,6 +91,16 @@ def _media(records, document, media_root, processor):
         if not data:
             raise ValueError(f'Video file is empty: {source}')
         data, extension = processor.prepare(data, extension, source)
+        # The metadata rectangle is the available layout slot, not necessarily
+        # the video's aspect ratio. PowerPoint stretches video to its shape,
+        # so size the actual shape uniformly inside that slot (contain).
+        aspect = processor.aspect_ratio(data, extension)
+        x, y, width, height = box
+        fitted_width = min(width, height * aspect)
+        fitted_height = fitted_width / aspect
+        box = (x + (width-fitted_width)/2, y + (height-fitted_height)/2,
+               fitted_width, fitted_height)
+        rect = fitz.Rect(box[0], box[1], box[0]+box[2], box[1]+box[3])
         entry = dict(source=source, data=data, extension=extension, box=box,
                      thumbnail=_png(page, clip=rect), playback=_playback(record.get('playback', {})))
         result.setdefault(page_number - 1, []).append(entry)
@@ -215,7 +225,7 @@ def compile_pptx(input, output, *, mode='background', background_format='svg', p
                         if background_format == 'svg':
                             svg_path = work / f'page-{i+1}.svg'
                             _run([typst, 'compile', str(source), str(svg_path), '--format', 'svg', '--pages', str(i+1), *common])
-                            svg = svg_path.read_bytes()
+                            svg = normalize_svg_images(svg_path.read_bytes())
                     else:
                         png_path = work / f'page-{i+1}.png'
                         _run([typst, 'compile', str(source), str(png_path), '--format', 'png', '--pages', str(i+1), '--ppi', str(ppi), *common])

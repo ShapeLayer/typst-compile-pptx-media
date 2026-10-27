@@ -18,6 +18,8 @@ The compiler checks codecs with ffprobe. For media outside its H.264/AAC
 compatibility profile, the CLI asks before converting with FFmpeg; originals
 are preserved. Use --video-conversion convert for explicit unattended approval.
 Pass thumbnails as `path(...)` so they resolve in the calling document.
+Thumbnails use contain fitting to preserve their aspect ratio. The compiler
+also contains the video within its layout slot using its display aspect ratio.
 The default thumbnail is a built-in play image. `compatible: "none"` renders
 only the image and omits PowerPoint video metadata. Ordinary Typst always
 renders the image, without opening or decoding the video.

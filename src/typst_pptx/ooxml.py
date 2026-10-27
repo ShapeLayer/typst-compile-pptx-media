@@ -151,6 +151,7 @@ class Slide:
         self.tree = empty_tree()
         self.root = node('p:sld', None, node('p:cSld', None, self.tree), node('p:clrMapOvr', None, node('a:masterClrMapping')))
         self.next_id = 2
+        self.next_timing_id = 1
 
     def rid(self, kind, target, external=False):
         self.rels.append((kind, target, external))
@@ -263,22 +264,66 @@ class Slide:
         media_id = self.rid('http://schemas.microsoft.com/office/2007/relationships/media', target)
         nvpr = nv.find('p:nvPr', NS)
         sub(nvpr, 'a:videoFile', {'{'+NS['r']+'}link': video_id})
-        ext = sub(sub(nvpr, 'p:extLst'), 'p:ext', {'uri': '{DAA4B4D4-6D71-4841-9C94-3DE7FCFB9EE3}'})
+        ext = sub(sub(nvpr, 'p:extLst'), 'p:ext', {'uri': '{DAA4B4D4-6D71-4841-9C94-3DE7FCFB9230}'})
         sub(ext, 'p14:media', {'{'+NS['r']+'}embed': media_id})
+        self._video_timing(shape_id, playback)
+
+    def _time_node(self, parent, attrs=None):
+        attrs = {'id': self.next_timing_id, **(attrs or {})}
+        self.next_timing_id += 1
+        return sub(parent, 'p:cTn', attrs)
+
+    def _media_command(self, parent, shape_id, command, preset, node_type, start_delay=0):
+        # Match PowerPoint's nested parallel media-call behavior. Media nodes
+        # alone are not click handlers; an interactive sequence must call them.
+        for level, attrs in enumerate(({'fill': 'hold'}, {'fill': 'hold'},
+                      {'presetID': preset, 'presetClass': 'mediacall', 'presetSubtype': 0,
+                       'fill': 'hold', 'nodeType': node_type})):
+            time = self._time_node(sub(parent, 'p:par'), attrs)
+            sub(time, 'p:stCondLst', None, node('p:cond', {'delay': start_delay if level == 0 else 0}))
+            parent = sub(time, 'p:childTnLst')
+        behavior = sub(sub(parent, 'p:cmd', {'type': 'call', 'cmd': command}), 'p:cBhvr')
+        self._time_node(behavior, {'dur': '1' if command == 'togglePause' else 'indefinite', 'fill': 'hold'})
+        sub(behavior, 'p:tgtEl', None, node('p:spTgt', {'spid': shape_id}))
+
+    def _video_timing(self, shape_id, playback):
         timing = self.root.find('p:timing', NS)
         if timing is None:
-            timing = sub(self.root, 'p:timing', None, node('p:tnLst', None, node('p:par', None, node('p:cTn', {'id': 1, 'dur': 'indefinite', 'restart': 'never', 'nodeType': 'tmRoot'}, node('p:childTnLst')))))
-        children = timing.find('.//p:childTnLst', NS)
+            timing = sub(self.root, 'p:timing')
+            root = self._time_node(sub(sub(timing, 'p:tnLst'), 'p:par'),
+                {'dur': 'indefinite', 'restart': 'never', 'nodeType': 'tmRoot'})
+            children = sub(root, 'p:childTnLst')
+            sequence = sub(children, 'p:seq', {'concurrent': 1, 'nextAc': 'seek'})
+            main = self._time_node(sequence, {'dur': 'indefinite', 'nodeType': 'mainSeq'})
+            sub(main, 'p:childTnLst')
+            for tag, event in [('p:prevCondLst', 'onPrev'), ('p:nextCondLst', 'onNext')]:
+                sub(sequence, tag, None, node('p:cond', {'evt': event, 'delay': 0},
+                    node('p:tgtEl', None, node('p:sldTgt'))))
+        children = timing.find('p:tnLst/p:par/p:cTn/p:childTnLst', NS)
+        main = next(n for n in children.findall('p:seq/p:cTn', NS) if n.get('nodeType') == 'mainSeq')
+        autoplay = playback.get('autoplay', False)
+        self._media_command(main.find('p:childTnLst', NS), shape_id, 'playFrom(0.0)', 1,
+                            'afterEffect' if autoplay else 'clickEffect',
+                            0 if autoplay else 'indefinite')
+        # A media controller remains dormant until a play/toggle command calls it.
         volume = 0 if playback.get('muted', False) else round(playback.get('volume', 1) * 100000)
-        video = sub(children, 'p:video', None)
-        media = sub(video, 'p:cMediaNode', {'vol': volume, 'numSld': 1, 'showWhenStopped': 1})
-        attrs = {'id': self.next_id + 100, 'fill': 'hold', 'display': 0}
+        # Use PowerPoint's video defaults; slide-count limits are for audio.
+        media = sub(sub(children, 'p:video'), 'p:cMediaNode',
+                    {'vol': volume})
+        attrs = {'fill': 'hold', 'display': 0}
         if playback.get('loop', False):
             attrs['repeatCount'] = 'indefinite'
-        ctn = sub(media, 'p:cTn', attrs)
-        conditions = sub(ctn, 'p:stCondLst')
-        if playback.get('autoplay', False):
-            sub(conditions, 'p:cond', {'delay': 0})
-        else:
-            sub(conditions, 'p:cond', {'evt': 'onClick', 'delay': 0}, node('p:tgtEl', None, node('p:spTgt', {'spid': shape_id})))
+        controller = self._time_node(media, attrs)
+        sub(controller, 'p:stCondLst', None, node('p:cond', {'delay': 'indefinite'}))
         sub(media, 'p:tgtEl', None, node('p:spTgt', {'spid': shape_id}))
+        # Consume clicks on the video and toggle play/pause, rather than
+        # allowing those clicks to advance to the next slide.
+        sequence = sub(children, 'p:seq', {'concurrent': 1, 'nextAc': 'seek'})
+        interactive = self._time_node(sequence, {'restart': 'whenNotActive', 'fill': 'hold',
+            'evtFilter': 'cancelBubble', 'nodeType': 'interactiveSeq'})
+        sub(interactive, 'p:stCondLst', None, node('p:cond', {'evt': 'onClick', 'delay': 0},
+            node('p:tgtEl', None, node('p:spTgt', {'spid': shape_id}))))
+        sub(interactive, 'p:endSync', {'evt': 'end', 'delay': 0}, node('p:rtn', {'val': 'all'}))
+        self._media_command(sub(interactive, 'p:childTnLst'), shape_id, 'togglePause', 2, 'clickEffect')
+        sub(sequence, 'p:nextCondLst', None, node('p:cond', {'evt': 'onClick', 'delay': 0},
+            node('p:tgtEl', None, node('p:spTgt', {'spid': shape_id}))))

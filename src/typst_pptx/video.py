@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 import subprocess
 
@@ -13,6 +14,7 @@ class VideoInspection:
     audio_codecs: tuple
     pixel_format: str
     reasons: tuple
+    display_aspect_ratio: float = 0.0
 
     @property
     def compatible(self):
@@ -36,6 +38,32 @@ def _invoke(command, tool, timeout=None):
         detail = '\n'.join(result.stderr.strip().splitlines()[-8:])
         raise RuntimeError(f'{tool} failed: {detail or "unknown media error"}')
     return result.stdout
+
+
+def display_aspect_ratio(stream):
+    """Display geometry includes non-square pixels and orientation metadata."""
+    try:
+        width, height = float(stream['width']), float(stream['height'])
+        sar = stream.get('sample_aspect_ratio', '1:1')
+        try:
+            numerator, denominator = map(float, sar.split(':'))
+            if numerator > 0 and denominator > 0:
+                width *= numerator / denominator
+        except (ValueError, AttributeError, ZeroDivisionError):
+            pass
+        rotation = float(stream.get('tags', {}).get('rotate', 0))
+        for side_data in stream.get('side_data_list', []):
+            if 'rotation' in side_data:
+                rotation = float(side_data['rotation'])
+                break
+        angle = math.radians(rotation)
+        w = abs(math.cos(angle))*width + abs(math.sin(angle))*height
+        h = abs(math.sin(angle))*width + abs(math.cos(angle))*height
+        if not all(math.isfinite(v) and v > 0 for v in (width, height, w, h)):
+            raise ValueError('invalid dimensions')
+        return w/h
+    except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+        raise RuntimeError('FFprobe could not identify the video display dimensions') from exc
 
 
 def inspect_video(path, extension, ffprobe='ffprobe'):
@@ -63,7 +91,8 @@ def inspect_video(path, extension, ffprobe='ffprobe'):
         reasons.append('audio codec: AAC is required by the compatibility profile')
     if extension not in ('mp4', 'm4v', 'mov') or 'mov' not in formats:
         reasons.append('container: MP4/M4V/MOV is required by the compatibility profile')
-    return VideoInspection(stream_index, codec, audios, pixels, tuple(reasons))
+    return VideoInspection(stream_index, codec, audios, pixels, tuple(reasons),
+                           display_aspect_ratio(video))
 
 
 class VideoProcessor:
@@ -74,6 +103,7 @@ class VideoProcessor:
         self.policy, self.confirm = policy, confirm
         self.ffprobe, self.ffmpeg = ffprobe, ffmpeg
         self.cache = {}
+        self.display_aspects = {}
 
     def prepare(self, data, extension, source):
         key = (hashlib.sha256(data).hexdigest(), extension)
@@ -107,5 +137,10 @@ class VideoProcessor:
             if not converted:
                 raise RuntimeError('FFmpeg produced an empty video')
             result = (converted, 'mp4')
+            info = verified
+        self.display_aspects[(hashlib.sha256(result[0]).hexdigest(), result[1])] = info.display_aspect_ratio
         self.cache[key] = result
         return result
+
+    def aspect_ratio(self, data, extension):
+        return self.display_aspects[(hashlib.sha256(data).hexdigest(), extension)]

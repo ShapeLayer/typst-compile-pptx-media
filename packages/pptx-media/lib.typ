@@ -24,11 +24,11 @@
           playback: playback)) <typst-pptx-media>]
       }
       if thumbnail != none {
-        image(thumbnail, width: size.width, height: size.height, fit: "cover")
+        image(thumbnail, width: size.width, height: size.height, fit: "contain")
       } else {
         // An image fallback needs no video decoder in ordinary Typst.
         image(bytes("<svg xmlns='http://www.w3.org/2000/svg' width='640' height='360'><rect width='640' height='360' fill='#172033'/><path d='M280 120L280 240L390 180Z' fill='white'/></svg>"),
-          format: "svg", width: size.width, height: size.height, fit: "cover")
+          format: "svg", width: size.width, height: size.height, fit: "contain")
       }
     })
   )

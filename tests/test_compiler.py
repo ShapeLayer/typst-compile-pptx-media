@@ -177,7 +177,9 @@ class CompilerTests(unittest.TestCase):
                     root = self.xml(archive, 'ppt/slides/slide1.xml')
                     self.assertEqual(root.find('.//p:cMediaNode', NS).get('vol'), '0')
                     self.assertEqual(root.find('.//p:cMediaNode/p:cTn', NS).get('repeatCount'), 'indefinite')
-                    self.assertEqual(root.find('.//p:stCondLst/p:cond', NS).get('delay'), '0')
+                    self.assertEqual(root.find('.//p:cMediaNode/p:cTn/p:stCondLst/p:cond', NS).get('delay'), 'indefinite')
+                    self.assertIsNotNone(root.find(".//p:cmd[@cmd='playFrom(0.0)']", NS))
+                    self.assertIsNotNone(root.find(".//p:ext[@uri='{DAA4B4D4-6D71-4841-9C94-3DE7FCFB9230}']/p14:media", NS))
                     self.assertIsNotNone(root.find('.//p14:media', NS).get('{'+NS['r']+'}embed'))
                     video = [n for n in archive.namelist() if n.endswith('.mp4')]
                     self.assertEqual(len(video), 1)
@@ -205,6 +207,61 @@ class CompilerTests(unittest.TestCase):
             self.assertFalse(any(n.endswith('.avi') for n in archive.namelist()))
         self.assertEqual(original.read_bytes(), original_bytes)
 
+    def test_autoplay_loop_defaults_survive_wrapper_and_explicit_override(self):
+        self.write('''#let video(..options) = media("video.mp4", width: 160pt, height: 90pt,
+  playback: (autoplay: true, loop: true, ..options.named()))
+#video()
+#pagebreak()
+#video(autoplay: false)
+''')
+        self.compile()
+        with ZipFile(self.output) as archive:
+            for page, automatic in [(1, True), (2, False)]:
+                root = self.xml(archive, f'ppt/slides/slide{page}.xml')
+                main = root.find(".//p:cTn[@nodeType='mainSeq']", NS)
+                first = main.find('p:childTnLst/p:par/p:cTn', NS)
+                self.assertEqual(first.find('p:stCondLst/p:cond', NS).get('delay'),
+                                 '0' if automatic else 'indefinite')
+                effect = main.find(".//p:cTn[@presetClass='mediacall']", NS)
+                self.assertEqual(effect.get('nodeType'), 'afterEffect' if automatic else 'clickEffect')
+                controller = root.find('.//p:cMediaNode/p:cTn', NS)
+                self.assertEqual(controller.get('repeatCount'), 'indefinite')
+
+    def test_video_and_thumbnail_keep_original_aspect_in_wide_slot(self):
+        self.write('#media("video.mp4", thumbnail: path("thumb.png"), width: 300pt, height: 90pt)')
+        for mode in ('background', 'editable'):
+            with self.subTest(mode=mode):
+                self.compile(mode=mode)
+                with ZipFile(self.output) as archive:
+                    self.assert_package(archive)
+                    root = self.xml(archive, 'ppt/slides/slide1.xml')
+                    video = next(p for p in root.findall('.//p:pic', NS)
+                        if p.find('p:nvPicPr/p:nvPr/a:videoFile', NS) is not None)
+                    transform = video.find('p:spPr/a:xfrm', NS)
+                    ext = transform.find('a:ext', NS)
+                    off = transform.find('a:off', NS)
+                    self.assertAlmostEqual(int(ext.get('cx'))/12700, 160, places=3)
+                    self.assertAlmostEqual(int(ext.get('cy'))/12700, 90, places=3)
+                    self.assertAlmostEqual(int(off.get('x'))/12700, 90, places=3)
+                    self.assertAlmostEqual(int(off.get('y'))/12700, 20, places=3)
+                    rid = video.find('p:blipFill/a:blip', NS).get('{'+NS['r']+'}embed')
+                    rels = self.xml(archive, 'ppt/slides/_rels/slide1.xml.rels')
+                    target = next(r.get('Target') for r in rels if r.get('Id') == rid)
+                    poster = Image.open(io.BytesIO(archive.read(posixpath.normpath('ppt/slides/'+target))))
+                    self.assertAlmostEqual(poster.width/poster.height, 16/9, delta=.02)
+
+    @unittest.skipUnless(shutil.which('ffmpeg'), 'FFmpeg required')
+    def test_portrait_video_in_landscape_slot(self):
+        subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-i', str(self.work/'video.mp4'),
+            '-vf', 'scale=90:160,setsar=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'copy',
+            str(self.work/'portrait.mp4')], check=True)
+        self.write('#media("portrait.mp4", width: 300pt, height: 90pt)')
+        self.compile()
+        with ZipFile(self.output) as archive:
+            root = self.xml(archive, 'ppt/slides/slide1.xml')
+            ext = root.find('.//p:pic/p:spPr/a:xfrm/a:ext', NS)
+            self.assertAlmostEqual(int(ext.get('cx'))/int(ext.get('cy')), 9/16, places=5)
+
     def test_remote_video_embedded_and_click_volume(self):
         url = 'https://example.org/clip.mp4?a=1&b=2'
         self.write('#media("' + url + '", width: 160pt, height: 90pt, playback: (volume: 0.25))')
@@ -230,7 +287,9 @@ class CompilerTests(unittest.TestCase):
                     root = self.xml(archive, 'ppt/slides/slide1.xml')
                     self.assertIsNotNone(root.find('.//p14:media', NS).get('{'+NS['r']+'}embed'))
                     self.assertEqual(root.find('.//p:cMediaNode', NS).get('vol'), '25000')
-                    self.assertEqual(root.find('.//p:stCondLst/p:cond', NS).get('evt'), 'onClick')
+                    interactive = root.find(".//p:cTn[@nodeType='interactiveSeq']", NS)
+                    self.assertEqual(interactive.find('p:stCondLst/p:cond', NS).get('evt'), 'onClick')
+                    self.assertIsNotNone(interactive.find(".//p:cmd[@cmd='togglePause']", NS))
 
     def test_download_failure_preserves_previous_output(self):
         self.write('#media("https://example.org/clip.mp4", width: 160pt, height: 90pt)')
@@ -354,6 +413,41 @@ class CompilerTests(unittest.TestCase):
         self.compile(mode='editable', inputs=['title=Custom title'], font_path=[self.work])
         with ZipFile(self.output) as archive:
             self.assertIn('Custom title', ''.join(self.xml(archive, 'ppt/slides/slide1.xml').itertext()))
+
+    def test_svg_background_normalizes_exif_against_pdf_orientation(self):
+        import base64
+        from PIL import ImageChops, ImageOps
+        image = Image.new('RGB', (120, 60), 'red')
+        image.paste('blue', (60, 0, 120, 60))
+        for orientation in (3, 6, 8):
+            exif = Image.Exif()
+            exif[274] = orientation
+            image.save(self.work / f'photo{orientation}.jpg', exif=exif)
+        self.write('#image("photo3.jpg", width: 80pt) #image("photo6.jpg", height: 80pt) #image("photo8.jpg", height: 80pt)')
+        self.compile()
+        with ZipFile(self.output) as archive:
+            svg = ET.fromstring(archive.read(next(n for n in archive.namelist() if n.endswith('.svg'))))
+            embedded = list(svg.iter('{http://www.w3.org/2000/svg}image'))
+            self.assertEqual(len(embedded), 3)
+            for orientation, element in zip((3, 6, 8), embedded):
+                data = base64.b64decode(element.get('{http://www.w3.org/1999/xlink}href').split(',')[1])
+                with Image.open(io.BytesIO(data)) as actual, Image.open(self.work / f'photo{orientation}.jpg') as original:
+                    expected = ImageOps.exif_transpose(original)
+                    self.assertEqual(actual.size, expected.size)
+                    self.assertIsNone(actual.getexif().get(274))
+                    self.assertIsNone(ImageChops.difference(actual.convert('RGB'), expected.convert('RGB')).getbbox())
+
+
+    def test_imported_svg_background_keeps_visible_vector_paths(self):
+        (self.work / 'circuit.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 40"><path d="M0 0L80 40" stroke="red"/></svg>')
+        self.write('#image("circuit.svg", width: 160pt)')
+        self.compile()
+        with ZipFile(self.output) as archive:
+            svg = archive.read(next(n for n in archive.namelist() if n.endswith('.svg')))
+            root = ET.fromstring(svg)
+            self.assertNotIn(b'data:image/svg+xml', svg)
+            self.assertTrue(any(p.get('d') == 'M0 0L80 40' for p in root.iter('{http://www.w3.org/2000/svg}path')))
+            self.assertEqual(len(list(root.iter('{http://www.w3.org/2000/svg}svg'))), 2)
 
 
 if __name__ == '__main__':

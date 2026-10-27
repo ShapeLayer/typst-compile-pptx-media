@@ -8,14 +8,14 @@ import unittest
 from unittest.mock import patch
 
 from typst_pptx.cli import confirm_video_conversion
-from typst_pptx.video import VideoInspection, VideoProcessor, inspect_video
+from typst_pptx.video import VideoInspection, VideoProcessor, inspect_video, display_aspect_ratio
 
 FIXTURE = Path(__file__).parent / 'fixtures/video.mp4'
 
 
 class CodecInspectionTests(unittest.TestCase):
     def info(self, video='h264', audio='aac', pixels='yuv420p', extension='mp4'):
-        streams = [{'index': 0, 'codec_type': 'video', 'codec_name': video, 'pix_fmt': pixels}]
+        streams = [{'index': 0, 'codec_type': 'video', 'codec_name': video, 'pix_fmt': pixels, 'width': 160, 'height': 90}]
         if audio:
             streams.append({'index': 1, 'codec_type': 'audio', 'codec_name': audio})
         response = subprocess.CompletedProcess([], 0, json.dumps({'streams': streams,
@@ -31,6 +31,17 @@ class CodecInspectionTests(unittest.TestCase):
                        {'pixels': 'yuv420p10le'}, {'extension': 'avi'}):
             with self.subTest(change=change):
                 self.assertFalse(self.info(**change).compatible)
+
+    def test_display_aspect_includes_pixels_and_rotation(self):
+        self.assertAlmostEqual(display_aspect_ratio({'width': 1920, 'height': 1080}), 16/9)
+        self.assertAlmostEqual(display_aspect_ratio({'width': 1920, 'height': 1080,
+            'side_data_list': [{'rotation': -90}]}), 9/16)
+        self.assertAlmostEqual(display_aspect_ratio({'width': 720, 'height': 576,
+            'sample_aspect_ratio': '16:15'}), 4/3)
+        self.assertAlmostEqual(display_aspect_ratio({'width': 720, 'height': 576,
+            'sample_aspect_ratio': '16:15', 'tags': {'rotate': '90'}}), 3/4)
+        with self.assertRaises(RuntimeError):
+            display_aspect_ratio({'width': 0, 'height': 1080})
 
     def test_invalid_media_is_not_treated_as_compatible(self):
         for raw in ('not JSON', '{}', '{"streams": []}'):
