@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "typst-compile-pptx"
+version = "0.1.0"
+description = "Typst to PowerPoint compiler with editable objects and video support"
+requires-python = ">=3.10"
+dependencies = ["PyMuPDF>=1.28.2,<2", "Pillow>=10,<14"]
+
+[project.scripts]
+typst-pptx = "typst_pptx.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/typst-pptx/pptx-media" = ["packages/pptx-media/lib.typ", "packages/pptx-media/typst.toml", "packages/pptx-media/README.md", "packages/pptx-media/LICENSE"]

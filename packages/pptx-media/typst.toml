@@ -1,0 +1,8 @@
+[package]
+name = "pptx-media"
+version = "0.1.0"
+entrypoint = "lib.typ"
+authors = ["typst-compile-pptx contributors"]
+license = "MIT"
+description = "Video thumbnails and metadata for the typst-pptx compiler"
+compiler = "0.15.0"

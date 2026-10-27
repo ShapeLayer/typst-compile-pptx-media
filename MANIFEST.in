@@ -1,0 +1,5 @@
+include LICENSE README.md
+recursive-include packages/pptx-media *.typ *.toml *.md LICENSE
+recursive-include examples *.typ
+recursive-include tests *.py *.mp4
+recursive-include tools/openxml-validator *.cs *.csproj
