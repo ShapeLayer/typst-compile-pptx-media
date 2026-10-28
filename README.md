@@ -2,6 +2,8 @@
 
 Typst 문서를 PowerPoint로 내보내는 독립 CLI 확장과 `pptx-media` Typst 패키지입니다.
 
+[사용 사례](https://github.com/shapelayer-args/basic-physics-experiments-2-seminar)
+
 ## 설치
 
 Python 3.10 이상과 Typst 0.15 이상, FFmpeg 6 이상이 필요합니다.　　
